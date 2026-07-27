@@ -18,6 +18,8 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
     for cat in source_data:
         # Support both 'category' and 'name' keys in JSON
         cat_name = cat.get('category') or cat.get('name')
+        # Use description from JSON if provided, else generate one
+        cat_desc = cat.get('description') or f"Questions related to {cat_name.replace('_', ' ')}"
         examples_raw = cat.get('examples', [])
         
         if isinstance(examples_raw, str):
@@ -26,26 +28,47 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
             example_lines = [str(ex).strip() for ex in examples_raw if str(ex).strip()]
             
         items.append({
-            "description": f"Questions related to {cat_name.replace('_', ' ')}",
+            "description": cat_desc,
             "examples": [{"value": ex} for ex in example_lines],
             "name": cat_name,
             "uuid": str(uuid.uuid4())
         })
         category_description[cat_name] = {
-            "description": f"Questions related to {cat_name.replace('_', ' ')}",
+            "description": cat_desc,
             "examples": example_lines,
             "to": []
         }
 
-    # 3. Create unique ID and Component
-    new_cid = f"Categorize:{str(uuid.uuid4().hex)[:12]}"
+    # 3. Determine if we are updating an existing node or creating a new one
+    existing_cid = None
+    existing_pos = {"x": position_x, "y": position_y}
     
-    # Use a default LLM/Params structure
+    # Check components for a node with the same name
+    for cid, cobj in target_data.get('components', {}).items():
+        if cobj.get('obj', {}).get('name') == node_name:
+            existing_cid = cid
+            break
+            
+    # If not found in components, check graph nodes (UI name)
+    if not existing_cid:
+        for node in target_data.get('graph', {}).get('nodes', []):
+            if node.get('data', {}).get('name') == node_name:
+                existing_cid = node['id']
+                existing_pos = node['position']
+                break
+
+    new_cid = existing_cid if existing_cid else f"Categorize:{str(uuid.uuid4().hex)[:12]}"
+    
+    # Use a default LLM/Params structure, but try to preserve existing LLM if updating
+    llm_id = "deepseek/deepseek-v4-flash@Deepseek@OpenAI-API-Compatible"
+    if existing_cid and existing_cid in target_data['components']:
+        llm_id = target_data['components'][existing_cid]['obj']['params'].get('llm_id', llm_id)
+
     params = {
         "frequencyPenaltyEnabled": True,
         "frequency_penalty": 0.7,
         "items": items,
-        "llm_id": "deepseek/deepseek-v4-flash@Deepseek@OpenAI-API-Compatible",
+        "llm_id": llm_id,
         "maxTokensEnabled": False,
         "max_tokens": 256,
         "message_history_window_size": 1,
@@ -68,8 +91,8 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
             "name": node_name,
             "params": params
         },
-        "upstream": [],
-        "downstream": []
+        "upstream": target_data['components'][existing_cid]['upstream'] if existing_cid and existing_cid in target_data['components'] else [],
+        "downstream": target_data['components'][existing_cid]['downstream'] if existing_cid and existing_cid in target_data['components'] else []
     }
 
     # 4. Inject into DSL
@@ -77,26 +100,45 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
     target_data['components'][new_cid] = component
 
     if 'graph' not in target_data: target_data['graph'] = {"nodes": [], "edges": []}
-    target_data['graph']['nodes'].append({
-        "id": new_cid,
-        "type": "categorizeNode",
-        "data": {
-            "label": "Categorize",
-            "name": node_name,
-            "form": params
-        },
-        "position": {"x": position_x, "y": position_y},
-        "selected": True,
-        "sourcePosition": "right",
-        "targetPosition": "left"
-    })
+    
+    # Update or add visual graph node
+    node_found = False
+    for i, node in enumerate(target_data['graph']['nodes']):
+        if node['id'] == new_cid:
+            target_data['graph']['nodes'][i]['data']['form'] = params
+            target_data['graph']['nodes'][i]['data']['name'] = node_name
+            node_found = True
+            break
+            
+    if not node_found:
+        target_data['graph']['nodes'].append({
+            "id": new_cid,
+            "type": "categorizeNode",
+            "data": {
+                "label": "Categorize",
+                "name": node_name,
+                "form": params
+            },
+            "position": existing_pos,
+            "selected": True,
+            "sourcePosition": "right",
+            "targetPosition": "left"
+        })
 
+    # Update or add top-level nodes list
     if 'nodes' not in target_data: target_data['nodes'] = []
-    target_data['nodes'].append({
-        "id": new_cid,
-        "obj": component["obj"],
-        "type": "categorizeNode"
-    })
+    top_node_found = False
+    for i, node in enumerate(target_data['nodes']):
+        if node['id'] == new_cid:
+            target_data['nodes'][i]['obj'] = component["obj"]
+            top_node_found = True
+            break
+    if not top_node_found:
+        target_data['nodes'].append({
+            "id": new_cid,
+            "obj": component["obj"],
+            "type": "categorizeNode"
+        })
 
     return json.dumps(target_data)
 
