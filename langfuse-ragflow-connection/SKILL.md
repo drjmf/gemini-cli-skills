@@ -33,4 +33,17 @@ Until a patch is released by the Ragflow team:
 3. Clear/remove the API keys and Host information.
 4. Save the configuration.
 
-This stops the broken code from running and allows the chatbot to function normally without throwing errors in the chat interface.
+### Database-level Disabling (If UI is unreachable or fails)
+
+If the UI configuration does not persist or the integration continues to cause errors:
+
+1.  **Identify Database**: The database is typically named `rag_flow`.
+2.  **Locate Table**: Settings are stored in the `tenant_langfuse` table.
+3.  **Clear Configuration**:
+    ```bash
+    # Get password from RAGFLOW_DB_PWD in .secrets
+    docker exec ragflow-mysql-1 mysql -u root -p[PASSWORD] rag_flow -e "DELETE FROM tenant_langfuse;"
+    ```
+4.  **Restart**: While not always required, a restart of the RagFlow CPU container ensures all background workers pick up the change.
+
+This stops the broken code from running and allows the chatbot and parsing tasks (including metadata generation) to function normally without throwing errors.
