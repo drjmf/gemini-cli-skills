@@ -12,9 +12,8 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
     with open(json_path, 'r') as f:
         source_data = json.load(f)
 
-    # 2. Prepare new categories from JSON
-    new_items_list = []
-    new_category_description = {}
+    # 2. Prepare update map from JSON
+    new_categories_map = {}
     for cat in source_data:
         cat_name = cat.get('category') or cat.get('name')
         cat_desc = cat.get('description') or f"Questions related to {cat_name.replace('_', ' ')}"
@@ -25,19 +24,13 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
         else:
             example_lines = [str(ex).strip() for ex in examples_raw if str(ex).strip()]
             
-        new_items_list.append({
-            "description": cat_desc,
-            "examples": [{"value": ex} for ex in example_lines],
-            "name": cat_name,
-            "uuid": str(uuid.uuid4())
-        })
-        new_category_description[cat_name] = {
+        new_categories_map[cat_name] = {
             "description": cat_desc,
             "examples": example_lines,
-            "to": []
+            "ui_examples": [{"value": ex} for ex in example_lines]
         }
 
-    # 3. Determine if we are updating an existing node or creating a new one
+    # 3. Determine if we are updating an existing node
     existing_cid = None
     existing_pos = {"x": position_x, "y": position_y}
     
@@ -53,51 +46,59 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
                 existing_pos = node['position']
                 break
 
-    # 4. If updating, merge with existing items
+    # 4. Process Logic and Items
     if existing_cid and existing_cid in target_data['components']:
-        existing_comp = target_data['components'][existing_cid]
-        existing_params = existing_comp['obj']['params']
+        new_cid = existing_cid
+        params = target_data['components'][new_cid]['obj']['params']
         
-        # Merge items
-        merged_items = existing_params.get('items', [])
-        if not merged_items:
-             # Try getting from graph node if logic list is empty
-             for n in target_data.get('graph', {}).get('nodes', []):
-                 if n['id'] == existing_cid:
-                     merged_items = n.get('data', {}).get('form', {}).get('items', [])
-                     break
-        
-        existing_names = {it['name'] for it in merged_items}
-        
-        # Update existing items with new data, or add new ones
-        for new_it in new_items_list:
+        # A) Update 'category_description' map (LLM Logic)
+        if 'category_description' not in params: params['category_description'] = {}
+        for name, data in new_categories_map.items():
+            if name not in params['category_description']:
+                params['category_description'][name] = {"to": []}
+            params['category_description'][name]['description'] = data['description']
+            params['category_description'][name]['examples'] = data['examples']
+
+        # B) Update 'items' list (UI Editor)
+        if 'items' not in params: params['items'] = []
+        for name, data in new_categories_map.items():
             found = False
-            for i, it in enumerate(merged_items):
-                if it['name'] == new_it['name']:
-                    merged_items[i]['description'] = new_it['description']
-                    merged_items[i]['examples'] = new_it['examples']
+            for i, it in enumerate(params['items']):
+                if it['name'] == name:
+                    params['items'][i]['description'] = data['description']
+                    params['items'][i]['examples'] = data['ui_examples']
                     found = True
                     break
             if not found:
-                merged_items.append(new_it)
-        
-        # Merge descriptions
-        merged_desc = existing_params.get('category_description', {})
-        merged_desc.update(new_category_description)
-        
-        params = existing_params.copy()
-        params['items'] = merged_items
-        params['category_description'] = merged_desc
+                params['items'].append({
+                    "description": data['description'],
+                    "examples": data['ui_examples'],
+                    "name": name,
+                    "uuid": str(uuid.uuid4())
+                })
         params['name'] = node_name
-        
-        new_cid = existing_cid
     else:
         # Fresh node creation
         new_cid = f"Categorize:{str(uuid.uuid4().hex)[:12]}"
+        items = []
+        category_description = {}
+        for name, data in new_categories_map.items():
+            items.append({
+                "description": data['description'],
+                "examples": data['ui_examples'],
+                "name": name,
+                "uuid": str(uuid.uuid4())
+            })
+            category_description[name] = {
+                "description": data['description'],
+                "examples": data['examples'],
+                "to": []
+            }
+            
         params = {
             "frequencyPenaltyEnabled": True,
             "frequency_penalty": 0.7,
-            "items": new_items_list,
+            "items": items,
             "llm_id": "deepseek/deepseek-v4-flash@Deepseek@OpenAI-API-Compatible",
             "maxTokensEnabled": False,
             "max_tokens": 256,
@@ -111,7 +112,7 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
             "temperatureEnabled": True,
             "topPEnabled": True,
             "top_p": 0.3,
-            "category_description": new_category_description,
+            "category_description": category_description,
             "name": node_name
         }
 
@@ -128,7 +129,7 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
     # 5. Inject into DSL
     target_data['components'][new_cid] = component
 
-    # Update or add visual graph node
+    # Sync visual graph node
     node_found = False
     for i, node in enumerate(target_data['graph']['nodes']):
         if node['id'] == new_cid:
@@ -152,7 +153,7 @@ def create_categorize_node(agent_dsl_hex, json_path, node_name, position_x=-700,
             "targetPosition": "left"
         })
 
-    # Update or add top-level nodes list
+    # Sync top-level nodes list
     if 'nodes' not in target_data: target_data['nodes'] = []
     top_node_found = False
     for i, node in enumerate(target_data['nodes']):
